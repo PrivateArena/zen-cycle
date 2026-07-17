@@ -4,9 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -48,21 +46,10 @@ func DetectActiveSource(projectPath, symlinkName string) (string, error) {
 		return "", err
 	}
 
-	// Check if it's a symlink or directory junction
+	// Since createLink always produces a real os.Symlink (on every OS,
+	// including Windows via os.Symlink's directory-symlink support),
+	// a plain ModeSymlink check is now sufficient everywhere.
 	isLink := fi.Mode()&os.ModeSymlink != 0
-
-	if !isLink {
-		// On Windows, check for reparse point attribute manually just in case
-		if runtime.GOOS == "windows" {
-			if fi.Mode()&os.ModeDir != 0 {
-				// Let's read link just to see if it succeeds. If it fails, it's a real dir.
-				_, err := os.Readlink(linkPath)
-				if err == nil {
-					isLink = true
-				}
-			}
-		}
-	}
 
 	if !isLink {
 		if fi.IsDir() {
@@ -97,41 +84,24 @@ func CheckDenylistProcesses(denylist []string) ([]string, error) {
 	return active, nil
 }
 
+// isProcessRunning delegates to a per-OS implementation (process_linux.go,
+// process_darwin.go, process_windows.go) that reads the process list via
+// direct syscalls — no shelling out to tasklist/pgrep/ps.
 func isProcessRunning(name string) bool {
 	nameLower := strings.ToLower(name)
-	if runtime.GOOS == "windows" {
-		// Check using tasklist
-		cmd := exec.Command("tasklist", "/NH", "/FO", "CSV")
-		output, err := cmd.Output()
-		if err != nil {
-			return false
-		}
-		return strings.Contains(strings.ToLower(string(output)), nameLower)
-	}
-
-	// Linux / macOS: check using pgrep
-	cmd := exec.Command("pgrep", "-f", name)
-	if err := cmd.Run(); err == nil {
-		return true
-	}
-
-	// Fallback check via ps
-	cmd = exec.Command("ps", "-ax", "-o", "comm=")
-	output, err := cmd.Output()
+	procNames, err := listRunningProcessNames()
 	if err != nil {
 		return false
 	}
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.Contains(strings.ToLower(line), nameLower) {
+	for _, p := range procNames {
+		if strings.Contains(strings.ToLower(p), nameLower) {
 			return true
 		}
 	}
 	return false
 }
 
-// SwitchActiveSource updates the symlink/junction to point to the new target.
+// SwitchActiveSource updates the symlink to point to the new target.
 func SwitchActiveSource(p Project, newTarget string) error {
 	// 1. Process Guard
 	activeProcesses, err := CheckDenylistProcesses(p.ProcessDenylist)
@@ -154,30 +124,16 @@ func SwitchActiveSource(p Project, newTarget string) error {
 	return createLink(targetPath, linkPath)
 }
 
+// createLink atomically points link -> target using a real symlink on every
+// platform. Since Go 1.6, os.Symlink can create directory symlinks on
+// Windows too (requires either Developer Mode enabled or an elevated
+// process), so there's no need to shell out to "mklink /J" and no need to
+// distinguish junctions from symlinks elsewhere in this file.
+//
+// The swap is atomic: build the new link at a temp path, verify it, then
+// os.Rename it over the old link in one step. Rename-over-existing-symlink
+// works on Linux, macOS, and Windows (NTFS) alike.
 func createLink(target, link string) error {
-	if runtime.GOOS != "windows" {
-		// POSIX: Atomic swap using temporary link and rename
-		tmpLink := link + fmt.Sprintf(".tmp-%d", os.Getpid())
-		_ = os.Remove(tmpLink)
-
-		// Use relative path for link target to keep the project portable
-		relTarget, err := filepath.Rel(filepath.Dir(link), target)
-		if err != nil {
-			relTarget = target // fallback to absolute
-		}
-
-		if err := os.Symlink(relTarget, tmpLink); err != nil {
-			return err
-		}
-		if err := os.Rename(tmpLink, link); err != nil {
-			_ = os.Remove(tmpLink)
-			return err
-		}
-		return nil
-	}
-
-	// Windows implementation
-
 	absTarget, err := filepath.Abs(target)
 	if err != nil {
 		return err
@@ -188,73 +144,28 @@ func createLink(target, link string) error {
 	}
 
 	tmpLink := absLink + fmt.Sprintf(".tmp-%d", os.Getpid())
-	_ = removeReparsePoint(tmpLink) // clean stale leftovers
+	_ = os.Remove(tmpLink) // clean up any stale leftover from a crashed run
 
-	// 1. Create new link at temp path — old link untouched
-	cmd := exec.Command("cmd", "/c", "mklink", "/J", tmpLink, absTarget)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		if errSym := os.Symlink(absTarget, tmpLink); errSym != nil {
-			_ = removeReparsePoint(tmpLink)
-			return fmt.Errorf("windows junction/symlink failed: %s - %w", string(output), errSym)
-		}
+	// Prefer a relative target so the project directory stays portable
+	// (e.g. if it's moved or synced elsewhere).
+	linkTarget := absTarget
+	if rel, err := filepath.Rel(filepath.Dir(absLink), absTarget); err == nil {
+		linkTarget = rel
 	}
 
-	// Verify new link resolves before touching the old one
+	if err := os.Symlink(linkTarget, tmpLink); err != nil {
+		return fmt.Errorf("failed to create symlink: %w", err)
+	}
+
+	// Verify the new link resolves before touching the old one.
 	if _, err := os.Stat(tmpLink); err != nil {
-		_ = removeReparsePoint(tmpLink)
+		_ = os.Remove(tmpLink)
 		return fmt.Errorf("new link failed validation: %w", err)
 	}
 
-	// 2. Move old link aside (don't delete) so we can restore on failure
-	backupLink := absLink + fmt.Sprintf(".bak-%d", os.Getpid())
-	_ = os.Remove(backupLink)
-	hadOld := false
-	if _, err := os.Lstat(absLink); err == nil {
-		if err := os.Rename(absLink, backupLink); err != nil {
-			_ = removeReparsePoint(tmpLink)
-			return fmt.Errorf("failed to move existing link aside: %w", err)
-		}
-		hadOld = true
-	} else if !os.IsNotExist(err) {
-		_ = removeReparsePoint(tmpLink)
-		return err
-	}
-
-	// 3. Activate new link
 	if err := os.Rename(tmpLink, absLink); err != nil {
-		if hadOld {
-			_ = os.Rename(backupLink, absLink)
-		}
-		_ = removeReparsePoint(tmpLink)
+		_ = os.Remove(tmpLink)
 		return fmt.Errorf("failed to activate new link: %w", err)
 	}
-
-	// 4. Only now discard the old link
-	if hadOld {
-		_ = removeReparsePoint(backupLink)
-	}
 	return nil
-}
-
-func removeReparsePoint(path string) error {
-	fi, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	if fi.Mode()&os.ModeSymlink != 0 {
-		return os.Remove(path)
-	}
-	if fi.IsDir() {
-		return ErrRealDirectory
-	}
-	return os.Remove(path)
-}
-
-// IsNTFS checks if the parent volume is NTFS (required for Windows Junctions)
-func IsNTFS(path string) (bool, error) {
-	if runtime.GOOS != "windows" {
-		return true, nil
-	}
-	// For simplicity, we assume true. If mklink /J fails, the fallback to os.Symlink handles it.
-	return true, nil
 }

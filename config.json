@@ -4,11 +4,20 @@
       "name": "ZCode",
       "path": "/media/jang/home/PortableApp/zcode/home",
       "symlink_name": ".zcode",
-      "current_active": ".zcode_dragaliarevival",
+      "current_active": ".zcode_gianggianggiang4321",
       "process_denylist": [
         "zcode"
       ]
+    },
+    {
+      "name": "AG",
+      "path": "/media/jang/home/PortableApp/antigravity/data/user-data/User",
+      "symlink_name": "globalStorage",
+      "current_active": "cycle_Piano_globalStorage",
+      "process_denylist": [
+        "antigravity"
+      ]
     }
   ],
-  "scroll_speed": 15.0
+  "scroll_speed": 15
 }

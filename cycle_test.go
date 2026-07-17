@@ -110,9 +110,7 @@ func TestSymlinkJunction(t *testing.T) {
 
 	// Verify safety check for real directory
 	// If link is replaced with a real directory, SwitchActiveSource should fail
-	if err := removeReparsePoint(linkPath); err != nil {
-		t.Fatal(err)
-	}
+	_ = os.Remove(linkPath)
 	if err := os.MkdirAll(linkPath, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +156,7 @@ func TestWindowsReparseRemoval(t *testing.T) {
 		t.Fatalf("failed to create Windows junction/link: %v", err)
 	}
 
-	err = removeReparsePoint(link)
+	err = os.Remove(link)
 	if err != nil {
 		t.Fatalf("failed to remove Windows junction/link: %v", err)
 	}
