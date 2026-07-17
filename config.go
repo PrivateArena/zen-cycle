@@ -23,7 +23,8 @@ type Project struct {
 
 // Config wraps all application settings.
 type Config struct {
-	Projects []Project `json:"projects"`
+	Projects    []Project `json:"projects"`
+	ScrollSpeed float64   `json:"scroll_speed"` // Scroll multiplier for profile list (1.0 = default)
 }
 
 var (
@@ -91,6 +92,9 @@ func LoadConfig() (*Config, error) {
 				_ = backupCorruptConfig(absPath)
 				return nil, fmt.Errorf("config corrupt, backed up: %w", err)
 			}
+			if cfg.ScrollSpeed <= 0 {
+				cfg.ScrollSpeed = 1.0
+			}
 			loadedPath = absPath
 			log.Printf("[Config] Loaded from: %s", absPath)
 			return &cfg, nil
@@ -98,7 +102,7 @@ func LoadConfig() (*Config, error) {
 	}
 
 	// Default config if none exists
-	defaultCfg := &Config{Projects: []Project{}}
+	defaultCfg := &Config{Projects: []Project{}, ScrollSpeed: 1.0}
 	if loadedPath == "" {
 		loadedPath = filepath.Join(getBinaryDir(), "config.json")
 	}

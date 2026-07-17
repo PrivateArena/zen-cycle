@@ -34,12 +34,27 @@ type UIState struct {
 	SymlinkInput  widget.Editor
 	DenylistInput widget.Editor
 
+	// Editors for Editing Projects
+	EditingProject  bool
+	EditNameInput    widget.Editor
+	EditPathInput    widget.Editor
+	EditSymlinkInput widget.Editor
+	EditDenylistInput widget.Editor
+
 	// Buttons
 	AddProjectBtn  widget.Clickable
 	RefreshBtn     widget.Clickable
+	EditBtn        widget.Clickable
+	SaveEditBtn    widget.Clickable
+	CancelEditBtn  widget.Clickable
 	DeleteBtn      widget.Clickable
 	SwitchButtons  []widget.Clickable
 	ProjectButtons []widget.Clickable
+
+	// Persistent layout state
+	ProfileList layout.List
+
+	ScrollSettling bool // debounce: true when ScrollBy was applied last frame
 }
 
 // BackgroundEvent represents async updates from worker to UI thread.
@@ -72,6 +87,7 @@ func runUI(window *app.Window, cfg *Config) error {
 	var uiState UIState
 	uiState.ActiveProjectIndex.Store(-1)
 	uiState.SymlinkInput.SetText("profile")
+	uiState.ProfileList.Axis = layout.Vertical
 
 	// Create event channels for background workers
 	eventChan := make(chan BackgroundEvent, 20)
@@ -277,7 +293,57 @@ func handleInputs(gtx layout.Context, ui *UIState, cfg *Config, triggerScan chan
 		triggerScan <- activeIdx
 	}
 
-	// 5. Account Switch Action Buttons
+	// 5. Edit Project
+	if ui.EditBtn.Clicked(gtx) && activeIdx >= 0 {
+		p := cfg.Projects[activeIdx]
+		ui.EditNameInput.SetText(p.Name)
+		ui.EditPathInput.SetText(p.Path)
+		ui.EditSymlinkInput.SetText(p.SymlinkName)
+		ui.EditDenylistInput.SetText(strings.Join(p.ProcessDenylist, ", "))
+		ui.EditingProject = true
+	}
+
+	// 6. Save Edit
+	if ui.SaveEditBtn.Clicked(gtx) && activeIdx >= 0 && ui.EditingProject {
+		name := strings.TrimSpace(ui.EditNameInput.Text())
+		path := strings.TrimSpace(ui.EditPathInput.Text())
+		symlink := strings.TrimSpace(ui.EditSymlinkInput.Text())
+		denylistRaw := strings.TrimSpace(ui.EditDenylistInput.Text())
+
+		if name == "" || path == "" || symlink == "" {
+			eventChan <- BackgroundEvent{Type: "ERROR", Message: "Name, path, and target link name are required."}
+		} else if _, err := os.Stat(path); err != nil {
+			eventChan <- BackgroundEvent{Type: "ERROR", Message: fmt.Sprintf("Project path does not exist: %v", err)}
+		} else {
+			var denylist []string
+			for _, p := range strings.Split(denylistRaw, ",") {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					denylist = append(denylist, p)
+				}
+			}
+			configMu.Lock()
+			cfg.Projects[activeIdx].Name = name
+			cfg.Projects[activeIdx].Path = path
+			cfg.Projects[activeIdx].SymlinkName = symlink
+			cfg.Projects[activeIdx].ProcessDenylist = denylist
+			configMu.Unlock()
+			if err := SaveConfigAtomic(cfg); err != nil {
+				eventChan <- BackgroundEvent{Type: "ERROR", Message: fmt.Sprintf("Failed to save config: %v", err)}
+			} else {
+				ui.EditingProject = false
+				eventChan <- BackgroundEvent{Type: "SUCCESS", Message: "Project updated."}
+				triggerScan <- activeIdx
+			}
+		}
+	}
+
+	// 7. Cancel Edit
+	if ui.CancelEditBtn.Clicked(gtx) {
+		ui.EditingProject = false
+	}
+
+	// 8. Account Switch Action Buttons
 	for i := range ui.SwitchButtons {
 		if ui.SwitchButtons[i].Clicked(gtx) && activeIdx >= 0 {
 			target := ui.AvailableProfiles[i]
@@ -359,16 +425,20 @@ func drawSidebar(gtx layout.Context, th *material.Theme, ui *UIState, cfg *Confi
 
 						return layout.Inset{Bottom: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 							return material.Clickable(gtx, &ui.ProjectButtons[i], func(gtx layout.Context) layout.Dimensions {
-								// Background block
-								defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
-								paint.FillShape(gtx.Ops, btnColor, clip.Rect{Max: gtx.Constraints.Min}.Op())
-								
-								return layout.Inset{Top: unit.Dp(10), Bottom: unit.Dp(10), Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-									lbl := material.Body2(th, proj.Name)
-									lbl.Color = txtColor
-									lbl.Font.Weight = font.Medium
-									return lbl.Layout(gtx)
-								})
+								return layout.Stack{}.Layout(gtx,
+									layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+										paint.FillShape(gtx.Ops, btnColor, clip.Rect{Max: gtx.Constraints.Min}.Op())
+										return layout.Dimensions{Size: gtx.Constraints.Min}
+									}),
+									layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+										return layout.Inset{Top: unit.Dp(10), Bottom: unit.Dp(10), Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+											lbl := material.Body2(th, proj.Name)
+											lbl.Color = txtColor
+											lbl.Font.Weight = font.Medium
+											return lbl.Layout(gtx)
+										})
+									}),
+								)
 							})
 						})
 					})
@@ -379,28 +449,32 @@ func drawSidebar(gtx layout.Context, th *material.Theme, ui *UIState, cfg *Confi
 }
 
 func drawContent(gtx layout.Context, th *material.Theme, ui *UIState, cfg *Config) layout.Dimensions {
-	// Fill content background
 	paint.FillShape(gtx.Ops, colorBg, clip.Rect{Max: gtx.Constraints.Max}.Op())
 
-	return layout.Inset{Top: unit.Dp(20), Bottom: unit.Dp(20), Left: unit.Dp(24), Right: unit.Dp(24)}.Layout(gtx,
-		func(gtx layout.Context) layout.Dimensions {
-			activeIdx := int(ui.ActiveProjectIndex.Load())
-			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-				// Header Status Bar
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return drawStatusBar(gtx, th, ui)
-				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(16)}.Layout),
-
-				// Main Content Panels: either detailed project view, or a fallback add form
-				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					if activeIdx >= 0 && activeIdx < len(cfg.Projects) {
-						return drawProjectDetail(gtx, th, ui, cfg.Projects[activeIdx])
-					}
-					return drawAddProjectForm(gtx, th, ui)
-				}),
+	return layout.Stack{}.Layout(gtx,
+		layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(20), Bottom: unit.Dp(20), Left: unit.Dp(24), Right: unit.Dp(24)}.Layout(gtx,
+				func(gtx layout.Context) layout.Dimensions {
+					activeIdx := int(ui.ActiveProjectIndex.Load())
+					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+							if activeIdx >= 0 && activeIdx < len(cfg.Projects) {
+								return drawProjectDetail(gtx, th, ui, cfg.Projects[activeIdx], cfg.ScrollSpeed)
+							}
+							return drawAddProjectForm(gtx, th, ui)
+						}),
+					)
+				},
 			)
-		},
+		}),
+		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+			if ui.ActiveError != "" || ui.ActiveSuccess != "" {
+				return layout.Inset{Top: unit.Dp(8), Left: unit.Dp(24), Right: unit.Dp(24)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return drawStatusBar(gtx, th, ui)
+				})
+			}
+			return layout.Dimensions{}
+		}),
 	)
 }
 
@@ -432,7 +506,10 @@ func drawAlert(gtx layout.Context, th *material.Theme, textVal string, bg color.
 	})
 }
 
-func drawProjectDetail(gtx layout.Context, th *material.Theme, ui *UIState, p Project) layout.Dimensions {
+func drawProjectDetail(gtx layout.Context, th *material.Theme, ui *UIState, p Project, scrollSpeed float64) layout.Dimensions {
+	if ui.EditingProject {
+		return drawEditProjectForm(gtx, th, ui, p)
+	}
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
@@ -449,6 +526,13 @@ func drawProjectDetail(gtx layout.Context, th *material.Theme, ui *UIState, p Pr
 				}),
 				layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					btn := material.Button(th, &ui.EditBtn, "EDIT")
+					btn.Background = colorSidebar
+					btn.Color = colorAccent
+					return btn.Layout(gtx)
+				}),
+				layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					btn := material.Button(th, &ui.DeleteBtn, "REMOVE")
 					btn.Background = colorRed
 					btn.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
@@ -456,7 +540,7 @@ func drawProjectDetail(gtx layout.Context, th *material.Theme, ui *UIState, p Pr
 				}),
 			)
 		}),
-		layout.Rigid(layout.Spacer{Height: unit.Dp(16)}.Layout),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
 
 		// Stats Metadata Info Block
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -466,7 +550,7 @@ func drawProjectDetail(gtx layout.Context, th *material.Theme, ui *UIState, p Pr
 					return layout.Dimensions{Size: gtx.Constraints.Min}
 				}),
 				layout.Stacked(func(gtx layout.Context) layout.Dimensions {
-					return layout.Inset{Top: unit.Dp(12), Bottom: unit.Dp(12), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 								return layout.Flex{}.Layout(gtx,
@@ -482,7 +566,7 @@ func drawProjectDetail(gtx layout.Context, th *material.Theme, ui *UIState, p Pr
 									}),
 								)
 							}),
-							layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
+							layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 								return layout.Flex{}.Layout(gtx,
 									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -497,7 +581,7 @@ func drawProjectDetail(gtx layout.Context, th *material.Theme, ui *UIState, p Pr
 									}),
 								)
 							}),
-							layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
+							layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 								return layout.Flex{}.Layout(gtx,
 									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -521,7 +605,7 @@ func drawProjectDetail(gtx layout.Context, th *material.Theme, ui *UIState, p Pr
 				}),
 			)
 		}),
-		layout.Rigid(layout.Spacer{Height: unit.Dp(24)}.Layout),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
 
 		// Profile Selection List Header
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -530,73 +614,118 @@ func drawProjectDetail(gtx layout.Context, th *material.Theme, ui *UIState, p Pr
 			lbl.Font.Weight = font.Bold
 			return lbl.Layout(gtx)
 		}),
-		layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
 
 		// Profile List
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 			if len(ui.AvailableProfiles) == 0 {
-				lbl := material.Caption(th, "No accounts/profiles detected in .zen-cycle. Manually add subfolders first.")
+				lbl := material.Caption(th, "No accounts/profiles detected in .zen-cycle.")
 				lbl.Color = colorSubtext
 				return lbl.Layout(gtx)
 			}
 
-			list := layout.List{Axis: layout.Vertical}
-			return list.Layout(gtx, len(ui.AvailableProfiles), func(gtx layout.Context, i int) layout.Dimensions {
-				profile := ui.AvailableProfiles[i]
-				isActive := (profile == ui.DetectedActive)
+			// On settling frames (after a ScrollBy), just Layout — no detection.
+			listLayout := func(gtx layout.Context) layout.Dimensions {
+				return ui.ProfileList.Layout(gtx, len(ui.AvailableProfiles), func(gtx layout.Context, i int) layout.Dimensions {
+					profile := ui.AvailableProfiles[i]
+					isActive := (profile == ui.DetectedActive)
 
-				bgVal := colorSidebar
-				if isActive {
-					bgVal = color.NRGBA{R: 0x2d, G: 0x2d, B: 0x2d, A: 0xff}
-				}
+					bgVal := colorSidebar
+					if isActive {
+						bgVal = color.NRGBA{R: 0x2d, G: 0x2d, B: 0x2d, A: 0xff}
+					}
 
-				return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					return layout.Stack{}.Layout(gtx,
-						layout.Expanded(func(gtx layout.Context) layout.Dimensions {
-							paint.FillShape(gtx.Ops, bgVal, clip.Rect{Max: gtx.Constraints.Min}.Op())
-							return layout.Dimensions{Size: gtx.Constraints.Min}
-						}),
-						layout.Stacked(func(gtx layout.Context) layout.Dimensions {
-							return layout.Inset{Top: unit.Dp(10), Bottom: unit.Dp(10), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-								return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-									layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-										return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												lbl := material.Body1(th, profile)
-												lbl.Color = colorText
-												lbl.Font.Weight = font.Medium
-												return lbl.Layout(gtx)
-											}),
-											layout.Rigid(layout.Spacer{Width: unit.Dp(12)}.Layout),
-											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												if isActive {
-													lbl := material.Caption(th, "[ACTIVE]")
-													lbl.Color = colorAccent
-													lbl.Font.Weight = font.Bold
+					return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return layout.Stack{}.Layout(gtx,
+							layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+								paint.FillShape(gtx.Ops, bgVal, clip.Rect{Max: gtx.Constraints.Min}.Op())
+								return layout.Dimensions{Size: gtx.Constraints.Min}
+							}),
+							layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+								return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+									return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+										layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+											return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+												layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+													lbl := material.Body2(th, profile)
+													lbl.Color = colorText
+													lbl.Font.Weight = font.Medium
 													return lbl.Layout(gtx)
-												}
-												return layout.Dimensions{}
-											}),
-										)
-									}),
-									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-										if isActive {
-											btn := material.Button(th, &ui.SwitchButtons[i], "ACTIVE")
-											btn.Background = color.NRGBA{R: 0x44, G: 0x44, B: 0x44, A: 0xff}
-											btn.Color = colorSubtext
+												}),
+												layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
+												layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+													if isActive {
+														lbl := material.Caption(th, "ACTIVE")
+														lbl.Color = colorAccent
+														lbl.Font.Weight = font.Bold
+														return lbl.Layout(gtx)
+													}
+													return layout.Dimensions{}
+												}),
+											)
+										}),
+										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+											if isActive {
+												btn := material.Button(th, &ui.SwitchButtons[i], "ACTIVE")
+												btn.Background = color.NRGBA{R: 0x44, G: 0x44, B: 0x44, A: 0xff}
+												btn.Color = colorSubtext
+												return btn.Layout(gtx)
+											}
+											btn := material.Button(th, &ui.SwitchButtons[i], "SWITCH")
+											btn.Background = colorAccent
+											btn.Color = color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
 											return btn.Layout(gtx)
-										}
-										btn := material.Button(th, &ui.SwitchButtons[i], "SWITCH TO")
-										btn.Background = colorAccent
-										btn.Color = color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
-										return btn.Layout(gtx)
-									}),
-								)
-							})
-						}),
-					)
+										}),
+									)
+								})
+							}),
+						)
+					})
 				})
-			})
+			}
+
+			// On settling frames (after a ScrollBy), just Layout — no detection.
+			if ui.ScrollSettling {
+				ui.ScrollSettling = false
+				return listLayout(gtx)
+			}
+
+			prevFirst := ui.ProfileList.Position.First
+			prevOffset := ui.ProfileList.Position.Offset
+
+			dims := listLayout(gtx)
+
+			m := scrollSpeed
+			if m > 0 && m != 1.0 {
+				n := len(ui.AvailableProfiles)
+				pos := ui.ProfileList.Position
+				if n > 0 && pos.Length > 0 {
+					avgItemPx := float64(pos.Length) / float64(n)
+					pixelDelta := float64(pos.First-prevFirst)*avgItemPx + float64(pos.Offset-prevOffset)
+					if pixelDelta > 0.5 || pixelDelta < -0.5 {
+						extraPx := pixelDelta * (m - 1.0)
+						// Cap at remaining scrollable distance to avoid clamp bounce
+						if pixelDelta > 0 {
+							remaining := float64(n-pos.First)*avgItemPx - float64(pos.Offset)
+							if extraPx > remaining {
+								extraPx = remaining
+							}
+						} else {
+							available := float64(pos.First)*avgItemPx + float64(pos.Offset)
+							if -extraPx > available {
+								extraPx = -available
+							}
+						}
+						extraItems := float32(extraPx / avgItemPx)
+						if extraItems != 0 {
+							ui.ProfileList.ScrollBy(extraItems)
+							ui.ScrollSettling = true
+							gtx.Execute(op.InvalidateCmd{})
+						}
+					}
+				}
+			}
+			return dims
 		}),
 	)
 }
@@ -674,6 +803,94 @@ func drawAddProjectForm(gtx layout.Context, th *material.Theme, ui *UIState) lay
 			btn.Background = colorAccent
 			btn.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
 			return btn.Layout(gtx)
+		}),
+	)
+}
+
+func drawEditProjectForm(gtx layout.Context, th *material.Theme, ui *UIState, p Project) layout.Dimensions {
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			lbl := material.H5(th, "Edit Project")
+			lbl.Color = colorText
+			return lbl.Layout(gtx)
+		}),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			lbl := material.Caption(th, "Modify the project configuration.")
+			lbl.Color = colorSubtext
+			return lbl.Layout(gtx)
+		}),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(20)}.Layout),
+
+		// Name Input Field
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			lbl := material.Body2(th, "Project Name")
+			lbl.Color = colorSubtext
+			return lbl.Layout(gtx)
+		}),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			edt := material.Editor(th, &ui.EditNameInput, "e.g., Discord Accounts")
+			return drawInputField(gtx, edt)
+		}),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(16)}.Layout),
+
+		// Path Input Field
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			lbl := material.Body2(th, "Project Folder Path (Absolute Directory Path)")
+			lbl.Color = colorSubtext
+			return lbl.Layout(gtx)
+		}),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			edt := material.Editor(th, &ui.EditPathInput, "e.g., /home/user/my_app")
+			return drawInputField(gtx, edt)
+		}),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(16)}.Layout),
+
+		// Symlink Target Name Input
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			lbl := material.Body2(th, "Target Link Folder Name (will be created as Symlink)")
+			lbl.Color = colorSubtext
+			return lbl.Layout(gtx)
+		}),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			edt := material.Editor(th, &ui.EditSymlinkInput, "default: profile")
+			return drawInputField(gtx, edt)
+		}),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(16)}.Layout),
+
+		// Process lock/denylist Input
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			lbl := material.Body2(th, "Process Denylist (comma separated, guards against split-brain writes)")
+			lbl.Color = colorSubtext
+			return lbl.Layout(gtx)
+		}),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			edt := material.Editor(th, &ui.EditDenylistInput, "e.g. discord.exe, discord")
+			return drawInputField(gtx, edt)
+		}),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(24)}.Layout),
+
+		// Submit / Cancel Buttons
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					btn := material.Button(th, &ui.SaveEditBtn, "SAVE")
+					btn.Background = colorAccent
+					btn.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+					return btn.Layout(gtx)
+				}),
+				layout.Rigid(layout.Spacer{Width: unit.Dp(12)}.Layout),
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					btn := material.Button(th, &ui.CancelEditBtn, "CANCEL")
+					btn.Background = colorSidebar
+					btn.Color = colorText
+					return btn.Layout(gtx)
+				}),
+			)
 		}),
 	)
 }

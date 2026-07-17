@@ -4,8 +4,11 @@
       "name": "ZCode",
       "path": "/media/jang/home/PortableApp/zcode/home",
       "symlink_name": ".zcode",
-      "current_active": "",
-      "process_denylist": null
+      "current_active": ".zcode_dragaliarevival",
+      "process_denylist": [
+        "zcode"
+      ]
     }
-  ]
+  ],
+  "scroll_speed": 15.0
 }
