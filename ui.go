@@ -44,7 +44,8 @@ type UIState struct {
 
 // BackgroundEvent represents async updates from worker to UI thread.
 type BackgroundEvent struct {
-	Type          string // "SCAN_RESULT", "ERROR", "SUCCESS"
+	Type          string   // "SCAN_RESULT", "ERROR", "SUCCESS", "SWITCH_DONE"
+	Index         int      // project index for targeted updates
 	Profiles      []string
 	ActiveProfile string
 	Message       string
@@ -75,6 +76,9 @@ func runUI(window *app.Window, cfg *Config) error {
 	// Create event channels for background workers
 	eventChan := make(chan BackgroundEvent, 20)
 	triggerScanChan := make(chan int, 20)
+
+	scanTicker := time.NewTicker(2 * time.Second)
+	defer scanTicker.Stop()
 
 	// Run background scan coordinator
 	go func() {
@@ -115,7 +119,7 @@ func runUI(window *app.Window, cfg *Config) error {
 				}
 				window.Invalidate()
 
-			case <-time.After(2 * time.Second):
+			case <-scanTicker.C:
 				// Periodically refresh the selected project
 				activeIdx := uiState.ActiveProjectIndex.Load()
 				if activeIdx >= 0 {
@@ -150,13 +154,22 @@ func runUI(window *app.Window, cfg *Config) error {
 						if len(uiState.SwitchButtons) != len(bEv.Profiles) {
 							uiState.SwitchButtons = make([]widget.Clickable, len(bEv.Profiles))
 						}
-					case "ERROR":
-						uiState.ActiveError = bEv.Message
-						uiState.ActiveSuccess = ""
-					case "SUCCESS":
-						uiState.ActiveSuccess = bEv.Message
-						uiState.ActiveError = ""
+				case "SWITCH_DONE":
+					configMu.Lock()
+					if bEv.Index >= 0 && bEv.Index < len(cfg.Projects) {
+						cfg.Projects[bEv.Index].CurrentActive = bEv.ActiveProfile
 					}
+					configMu.Unlock()
+					_ = SaveConfigAtomic(cfg)
+					uiState.ActiveSuccess = bEv.Message
+					uiState.ActiveError = ""
+				case "ERROR":
+					uiState.ActiveError = bEv.Message
+					uiState.ActiveSuccess = ""
+				case "SUCCESS":
+					uiState.ActiveSuccess = bEv.Message
+					uiState.ActiveError = ""
+				}
 				default:
 					break
 				}
@@ -209,7 +222,9 @@ func handleInputs(gtx layout.Context, ui *UIState, cfg *Config, triggerScan chan
 					ProcessDenylist: denylist,
 				}
 
+				configMu.Lock()
 				cfg.Projects = append(cfg.Projects, p)
+				configMu.Unlock()
 				if err := SaveConfigAtomic(cfg); err != nil {
 					eventChan <- BackgroundEvent{Type: "ERROR", Message: fmt.Sprintf("Failed to save config: %v", err)}
 				} else {
@@ -243,7 +258,9 @@ func handleInputs(gtx layout.Context, ui *UIState, cfg *Config, triggerScan chan
 	// 3. Delete Project
 	activeIdx := int(ui.ActiveProjectIndex.Load())
 	if ui.DeleteBtn.Clicked(gtx) && activeIdx >= 0 {
+		configMu.Lock()
 		cfg.Projects = append(cfg.Projects[:activeIdx], cfg.Projects[activeIdx+1:]...)
+		configMu.Unlock()
 		ui.ActiveProjectIndex.Store(-1)
 		ui.AvailableProfiles = nil
 		ui.DetectedActive = ""
@@ -265,20 +282,19 @@ func handleInputs(gtx layout.Context, ui *UIState, cfg *Config, triggerScan chan
 		if ui.SwitchButtons[i].Clicked(gtx) && activeIdx >= 0 {
 			target := ui.AvailableProfiles[i]
 			proj := cfg.Projects[activeIdx]
-			
+
 			// Execute symlink swap in background to prevent UI jank
 			go func(p Project, t string, idx int) {
 				err := SwitchActiveSource(p, t)
 				if err != nil {
 					eventChan <- BackgroundEvent{Type: "ERROR", Message: err.Error()}
 				} else {
-					// Update local config state
-					configMu.Lock()
-					cfg.Projects[idx].CurrentActive = t
-					_ = SaveConfigAtomic(cfg)
-					configMu.Unlock()
-
-					eventChan <- BackgroundEvent{Type: "SUCCESS", Message: fmt.Sprintf("Switched to target %q", t)}
+					eventChan <- BackgroundEvent{
+						Type:          "SWITCH_DONE",
+						Index:         idx,
+						ActiveProfile: t,
+						Message:       fmt.Sprintf("Switched to target %q", t),
+					}
 					triggerScan <- idx
 				}
 				window.Invalidate()

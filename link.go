@@ -29,8 +29,7 @@ func GetCycleSources(projectPath string) ([]string, error) {
 
 	var sources []string
 	for _, entry := range entries {
-		// Ignore hidden files/folders
-		if strings.HasPrefix(entry.Name(), ".") {
+		if !entry.IsDir() {
 			continue
 		}
 		sources = append(sources, entry.Name())
@@ -160,7 +159,7 @@ func createLink(target, link string) error {
 		// POSIX: Atomic swap using temporary link and rename
 		tmpLink := link + fmt.Sprintf(".tmp-%d", os.Getpid())
 		_ = os.Remove(tmpLink)
-		
+
 		// Use relative path for link target to keep the project portable
 		relTarget, err := filepath.Rel(filepath.Dir(link), target)
 		if err != nil {
@@ -170,10 +169,15 @@ func createLink(target, link string) error {
 		if err := os.Symlink(relTarget, tmpLink); err != nil {
 			return err
 		}
-		return os.Rename(tmpLink, link)
+		if err := os.Rename(tmpLink, link); err != nil {
+			_ = os.Remove(tmpLink)
+			return err
+		}
+		return nil
 	}
 
 	// Windows implementation
+
 	absTarget, err := filepath.Abs(target)
 	if err != nil {
 		return err
@@ -183,19 +187,51 @@ func createLink(target, link string) error {
 		return err
 	}
 
-	// Remove existing link / junction first (MoveFileEx replace doesn't support junctions/directories)
-	if err := removeReparsePoint(absLink); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to clear existing link: %w", err)
-	}
+	tmpLink := absLink + fmt.Sprintf(".tmp-%d", os.Getpid())
+	_ = removeReparsePoint(tmpLink) // clean stale leftovers
 
-	// Use Directory Junctions (mklink /J) to avoid requiring administrator privileges on Windows NTFS
-	cmd := exec.Command("cmd", "/c", "mklink", "/J", absLink, absTarget)
+	// 1. Create new link at temp path — old link untouched
+	cmd := exec.Command("cmd", "/c", "mklink", "/J", tmpLink, absTarget)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		// Fallback: If it's a file symlink, or junction failed, try standard os.Symlink
-		errSym := os.Symlink(absTarget, absLink)
-		if errSym != nil {
+		if errSym := os.Symlink(absTarget, tmpLink); errSym != nil {
+			_ = removeReparsePoint(tmpLink)
 			return fmt.Errorf("windows junction/symlink failed: %s - %w", string(output), errSym)
 		}
+	}
+
+	// Verify new link resolves before touching the old one
+	if _, err := os.Stat(tmpLink); err != nil {
+		_ = removeReparsePoint(tmpLink)
+		return fmt.Errorf("new link failed validation: %w", err)
+	}
+
+	// 2. Move old link aside (don't delete) so we can restore on failure
+	backupLink := absLink + fmt.Sprintf(".bak-%d", os.Getpid())
+	_ = os.Remove(backupLink)
+	hadOld := false
+	if _, err := os.Lstat(absLink); err == nil {
+		if err := os.Rename(absLink, backupLink); err != nil {
+			_ = removeReparsePoint(tmpLink)
+			return fmt.Errorf("failed to move existing link aside: %w", err)
+		}
+		hadOld = true
+	} else if !os.IsNotExist(err) {
+		_ = removeReparsePoint(tmpLink)
+		return err
+	}
+
+	// 3. Activate new link
+	if err := os.Rename(tmpLink, absLink); err != nil {
+		if hadOld {
+			_ = os.Rename(backupLink, absLink)
+		}
+		_ = removeReparsePoint(tmpLink)
+		return fmt.Errorf("failed to activate new link: %w", err)
+	}
+
+	// 4. Only now discard the old link
+	if hadOld {
+		_ = removeReparsePoint(backupLink)
 	}
 	return nil
 }
@@ -205,17 +241,10 @@ func removeReparsePoint(path string) error {
 	if err != nil {
 		return err
 	}
-	// Check if it has symlink mode (or directory junction)
 	if fi.Mode()&os.ModeSymlink != 0 {
 		return os.Remove(path)
 	}
 	if fi.IsDir() {
-		// Check if it's a junction by trying to delete it as a dir (junctions can be removed via os.Remove)
-		err := os.Remove(path)
-		if err == nil {
-			return nil
-		}
-		// If that fails, double-check if it's a real directory
 		return ErrRealDirectory
 	}
 	return os.Remove(path)

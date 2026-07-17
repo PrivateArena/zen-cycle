@@ -27,6 +27,9 @@ func main() {
 	if err != nil {
 		log.Printf("Warning: Failed to load config, starting with defaults: %v", err)
 	}
+	if cfg == nil {
+		cfg = &Config{}
+	}
 
 	// 3. Start Gio App
 	go func() {

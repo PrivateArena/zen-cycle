@@ -1,0 +1,11 @@
+{
+  "projects": [
+    {
+      "name": "ZCode",
+      "path": "/media/jang/home/PortableApp/zcode/home",
+      "symlink_name": ".zcode",
+      "current_active": "",
+      "process_denylist": null
+    }
+  ]
+}
