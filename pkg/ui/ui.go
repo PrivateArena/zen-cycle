@@ -1,4 +1,4 @@
-package main
+package ui
 
 import (
 	"fmt"
@@ -18,6 +18,9 @@ import (
 	"gioui.org/unit"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
+
+	"zen-cycle/pkg/config"
+	"zen-cycle/pkg/link"
 )
 
 // UIState captures the localized visual state of the application.
@@ -77,7 +80,7 @@ var (
 	colorRed     = color.NRGBA{R: 0xff, G: 0x33, B: 0x33, A: 0xff} // Danger/Error Red
 )
 
-func runUI(window *app.Window, cfg *Config) error {
+func RunUI(window *app.Window, cfg *config.Config) error {
 	th := material.NewTheme()
 	th.Palette.Bg = colorBg
 	th.Palette.Fg = colorText
@@ -101,29 +104,29 @@ func runUI(window *app.Window, cfg *Config) error {
 		for {
 			select {
 			case idx := <-triggerScanChan:
-				configMu.Lock()
+				config.ConfigMu.Lock()
 				if idx < 0 || idx >= len(cfg.Projects) {
-					configMu.Unlock()
+					config.ConfigMu.Unlock()
 					continue
 				}
 				p := cfg.Projects[idx]
-				configMu.Unlock()
+				config.ConfigMu.Unlock()
 
 				// Perform checks
-				sources, err := GetCycleSources(p.Path)
+				sources, err := link.GetCycleSources(p.Path)
 				if err != nil {
 					eventChan <- BackgroundEvent{Type: "ERROR", Message: fmt.Sprintf("Failed to list sources: %v", err)}
 					window.Invalidate()
 					continue
 				}
 
-				active, err := DetectActiveSource(p.Path, p.SymlinkName)
-				if err != nil && err != ErrRealDirectory {
+				active, err := link.DetectActiveSource(p.Path, p.SymlinkName)
+				if err != nil && err != link.ErrRealDirectory {
 					eventChan <- BackgroundEvent{Type: "ERROR", Message: fmt.Sprintf("Failed checking active link: %v", err)}
 				}
 
 				msg := ""
-				if err == ErrRealDirectory {
+				if err == link.ErrRealDirectory {
 					msg = "WARNING: Target path is a real directory, not a symlink! Overwriting is blocked."
 				}
 
@@ -171,12 +174,12 @@ func runUI(window *app.Window, cfg *Config) error {
 							uiState.SwitchButtons = make([]widget.Clickable, len(bEv.Profiles))
 						}
 				case "SWITCH_DONE":
-					configMu.Lock()
+					config.ConfigMu.Lock()
 					if bEv.Index >= 0 && bEv.Index < len(cfg.Projects) {
 						cfg.Projects[bEv.Index].CurrentActive = bEv.ActiveProfile
 					}
-					configMu.Unlock()
-					_ = SaveConfigAtomic(cfg)
+					config.ConfigMu.Unlock()
+					_ = config.SaveConfigAtomic(cfg)
 					uiState.ActiveSuccess = bEv.Message
 					uiState.ActiveError = ""
 				case "ERROR":
@@ -207,7 +210,7 @@ func runUI(window *app.Window, cfg *Config) error {
 	}
 }
 
-func handleInputs(gtx layout.Context, ui *UIState, cfg *Config, triggerScan chan int, eventChan chan BackgroundEvent, window *app.Window) {
+func handleInputs(gtx layout.Context, ui *UIState, cfg *config.Config, triggerScan chan int, eventChan chan BackgroundEvent, window *app.Window) {
 	// 1. Add Project Button Action
 	if ui.AddProjectBtn.Clicked(gtx) {
 		name := strings.TrimSpace(ui.NameInput.Text())
@@ -231,17 +234,17 @@ func handleInputs(gtx layout.Context, ui *UIState, cfg *Config, triggerScan chan
 					}
 				}
 
-				p := Project{
+				p := config.Project{
 					Name:            name,
 					Path:            path,
 					SymlinkName:     symlink,
 					ProcessDenylist: denylist,
 				}
 
-				configMu.Lock()
+				config.ConfigMu.Lock()
 				cfg.Projects = append(cfg.Projects, p)
-				configMu.Unlock()
-				if err := SaveConfigAtomic(cfg); err != nil {
+				config.ConfigMu.Unlock()
+				if err := config.SaveConfigAtomic(cfg); err != nil {
 					eventChan <- BackgroundEvent{Type: "ERROR", Message: fmt.Sprintf("Failed to save config: %v", err)}
 				} else {
 					ui.NameInput.SetText("")
@@ -274,13 +277,13 @@ func handleInputs(gtx layout.Context, ui *UIState, cfg *Config, triggerScan chan
 	// 3. Delete Project
 	activeIdx := int(ui.ActiveProjectIndex.Load())
 	if ui.DeleteBtn.Clicked(gtx) && activeIdx >= 0 {
-		configMu.Lock()
+		config.ConfigMu.Lock()
 		cfg.Projects = append(cfg.Projects[:activeIdx], cfg.Projects[activeIdx+1:]...)
-		configMu.Unlock()
+		config.ConfigMu.Unlock()
 		ui.ActiveProjectIndex.Store(-1)
 		ui.AvailableProfiles = nil
 		ui.DetectedActive = ""
-		if err := SaveConfigAtomic(cfg); err != nil {
+		if err := config.SaveConfigAtomic(cfg); err != nil {
 			eventChan <- BackgroundEvent{Type: "ERROR", Message: fmt.Sprintf("Failed to save config: %v", err)}
 		} else {
 			eventChan <- BackgroundEvent{Type: "SUCCESS", Message: "Project deleted."}
@@ -322,13 +325,13 @@ func handleInputs(gtx layout.Context, ui *UIState, cfg *Config, triggerScan chan
 					denylist = append(denylist, p)
 				}
 			}
-			configMu.Lock()
+			config.ConfigMu.Lock()
 			cfg.Projects[activeIdx].Name = name
 			cfg.Projects[activeIdx].Path = path
 			cfg.Projects[activeIdx].SymlinkName = symlink
 			cfg.Projects[activeIdx].ProcessDenylist = denylist
-			configMu.Unlock()
-			if err := SaveConfigAtomic(cfg); err != nil {
+			config.ConfigMu.Unlock()
+			if err := config.SaveConfigAtomic(cfg); err != nil {
 				eventChan <- BackgroundEvent{Type: "ERROR", Message: fmt.Sprintf("Failed to save config: %v", err)}
 			} else {
 				ui.EditingProject = false
@@ -350,8 +353,8 @@ func handleInputs(gtx layout.Context, ui *UIState, cfg *Config, triggerScan chan
 			proj := cfg.Projects[activeIdx]
 
 			// Execute symlink swap in background to prevent UI jank
-			go func(p Project, t string, idx int) {
-				err := SwitchActiveSource(p, t)
+			go func(p config.Project, t string, idx int) {
+				err := link.SwitchActiveSource(p, t)
 				if err != nil {
 					eventChan <- BackgroundEvent{Type: "ERROR", Message: err.Error()}
 				} else {
@@ -370,7 +373,7 @@ func handleInputs(gtx layout.Context, ui *UIState, cfg *Config, triggerScan chan
 }
 
 // GUI LAYOUTS
-func layoutMain(gtx layout.Context, th *material.Theme, ui *UIState, cfg *Config) {
+func layoutMain(gtx layout.Context, th *material.Theme, ui *UIState, cfg *config.Config) {
 	// Sidebar occupies 20% of screen width (max 200dp, min 150dp)
 	sidebarWidth := gtx.Dp(180)
 
@@ -387,7 +390,7 @@ func layoutMain(gtx layout.Context, th *material.Theme, ui *UIState, cfg *Config
 	)
 }
 
-func drawSidebar(gtx layout.Context, th *material.Theme, ui *UIState, cfg *Config) layout.Dimensions {
+func drawSidebar(gtx layout.Context, th *material.Theme, ui *UIState, cfg *config.Config) layout.Dimensions {
 	// Fill background color
 	paint.FillShape(gtx.Ops, colorSidebar, clip.Rect{Max: gtx.Constraints.Max}.Op())
 
@@ -448,7 +451,7 @@ func drawSidebar(gtx layout.Context, th *material.Theme, ui *UIState, cfg *Confi
 	)
 }
 
-func drawContent(gtx layout.Context, th *material.Theme, ui *UIState, cfg *Config) layout.Dimensions {
+func drawContent(gtx layout.Context, th *material.Theme, ui *UIState, cfg *config.Config) layout.Dimensions {
 	paint.FillShape(gtx.Ops, colorBg, clip.Rect{Max: gtx.Constraints.Max}.Op())
 
 	return layout.Stack{}.Layout(gtx,
@@ -506,7 +509,7 @@ func drawAlert(gtx layout.Context, th *material.Theme, textVal string, bg color.
 	})
 }
 
-func drawProjectDetail(gtx layout.Context, th *material.Theme, ui *UIState, p Project, scrollSpeed float64) layout.Dimensions {
+func drawProjectDetail(gtx layout.Context, th *material.Theme, ui *UIState, p config.Project, scrollSpeed float64) layout.Dimensions {
 	if ui.EditingProject {
 		return drawEditProjectForm(gtx, th, ui, p)
 	}
@@ -807,7 +810,7 @@ func drawAddProjectForm(gtx layout.Context, th *material.Theme, ui *UIState) lay
 	)
 }
 
-func drawEditProjectForm(gtx layout.Context, th *material.Theme, ui *UIState, p Project) layout.Dimensions {
+func drawEditProjectForm(gtx layout.Context, th *material.Theme, ui *UIState, p config.Project) layout.Dimensions {
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			lbl := material.H5(th, "Edit Project")

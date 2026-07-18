@@ -1,4 +1,4 @@
-package main
+package link
 
 import (
 	"golang.org/x/sys/unix"

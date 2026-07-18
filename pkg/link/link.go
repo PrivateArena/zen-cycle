@@ -1,4 +1,4 @@
-package main
+package link
 
 import (
 	"errors"
@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"zen-cycle/pkg/config"
 )
 
 var (
@@ -77,7 +79,7 @@ func CheckDenylistProcesses(denylist []string) ([]string, error) {
 		if name == "" {
 			continue
 		}
-		if isProcessRunning(name) {
+		if IsProcessRunning(name) {
 			active = append(active, name)
 		}
 	}
@@ -87,7 +89,7 @@ func CheckDenylistProcesses(denylist []string) ([]string, error) {
 // isProcessRunning delegates to a per-OS implementation (process_linux.go,
 // process_darwin.go, process_windows.go) that reads the process list via
 // direct syscalls — no shelling out to tasklist/pgrep/ps.
-func isProcessRunning(name string) bool {
+func IsProcessRunning(name string) bool {
 	nameLower := strings.ToLower(name)
 	procNames, err := listRunningProcessNames()
 	if err != nil {
@@ -102,7 +104,7 @@ func isProcessRunning(name string) bool {
 }
 
 // SwitchActiveSource updates the symlink to point to the new target.
-func SwitchActiveSource(p Project, newTarget string) error {
+func SwitchActiveSource(p config.Project, newTarget string) error {
 	// 1. Process Guard
 	activeProcesses, err := CheckDenylistProcesses(p.ProcessDenylist)
 	if err != nil {
@@ -121,7 +123,7 @@ func SwitchActiveSource(p Project, newTarget string) error {
 	}
 
 	// 2. Perform link creation
-	return createLink(targetPath, linkPath)
+	return CreateLink(targetPath, linkPath)
 }
 
 // createLink atomically points link -> target using a real symlink on every
@@ -133,7 +135,7 @@ func SwitchActiveSource(p Project, newTarget string) error {
 // The swap is atomic: build the new link at a temp path, verify it, then
 // os.Rename it over the old link in one step. Rename-over-existing-symlink
 // works on Linux, macOS, and Windows (NTFS) alike.
-func createLink(target, link string) error {
+func CreateLink(target, link string) error {
 	absTarget, err := filepath.Abs(target)
 	if err != nil {
 		return err

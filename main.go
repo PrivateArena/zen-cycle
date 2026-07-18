@@ -6,6 +6,9 @@ import (
 	"net"
 	"os"
 
+	"zen-cycle/pkg/config"
+	"zen-cycle/pkg/ui"
+
 	"gioui.org/app"
 	"gioui.org/unit"
 )
@@ -23,12 +26,12 @@ func main() {
 	defer singleInstanceListener.Close()
 
 	// 2. Load configuration
-	cfg, err := LoadConfig()
+	cfg, err := config.LoadConfig()
 	if err != nil {
 		log.Printf("Warning: Failed to load config, starting with defaults: %v", err)
 	}
 	if cfg == nil {
-		cfg = &Config{}
+		cfg = &config.Config{}
 	}
 
 	// 3. Start Gio App
@@ -38,7 +41,7 @@ func main() {
 		w.Option(app.Size(unit.Dp(800), unit.Dp(600)))
 		w.Option(app.MinSize(unit.Dp(600), unit.Dp(450)))
 		
-		if err := runUI(w, cfg); err != nil {
+		if err := ui.RunUI(w, cfg); err != nil {
 			log.Fatal(err)
 		}
 		os.Exit(0)

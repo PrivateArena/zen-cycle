@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"encoding/json"
@@ -28,8 +28,8 @@ type Config struct {
 }
 
 var (
-	configMu   sync.Mutex
-	loadedPath string
+	ConfigMu   sync.Mutex
+	LoadedPath string
 )
 
 func getBinaryDir() string {
@@ -49,10 +49,10 @@ func getBinaryDir() string {
 func getConfigPaths() []string {
 	binDir := getBinaryDir()
 	cwd, _ := os.Getwd()
-	
+
 	var paths []string
-	if loadedPath != "" {
-		paths = append(paths, loadedPath)
+	if LoadedPath != "" {
+		paths = append(paths, LoadedPath)
 	}
 
 	paths = append(paths,
@@ -69,8 +69,8 @@ func getConfigPaths() []string {
 
 // LoadConfig reads configuration using portable priority rules.
 func LoadConfig() (*Config, error) {
-	configMu.Lock()
-	defer configMu.Unlock()
+	ConfigMu.Lock()
+	defer ConfigMu.Unlock()
 
 	paths := getConfigPaths()
 	var finalErr error
@@ -95,7 +95,7 @@ func LoadConfig() (*Config, error) {
 			if cfg.ScrollSpeed <= 0 {
 				cfg.ScrollSpeed = 1.0
 			}
-			loadedPath = absPath
+			LoadedPath = absPath
 			log.Printf("[Config] Loaded from: %s", absPath)
 			return &cfg, nil
 		}
@@ -103,22 +103,22 @@ func LoadConfig() (*Config, error) {
 
 	// Default config if none exists
 	defaultCfg := &Config{Projects: []Project{}, ScrollSpeed: 1.0}
-	if loadedPath == "" {
-		loadedPath = filepath.Join(getBinaryDir(), "config.json")
+	if LoadedPath == "" {
+		LoadedPath = filepath.Join(getBinaryDir(), "config.json")
 	}
 	return defaultCfg, finalErr
 }
 
 // SaveConfigAtomic saves configuration atomically.
 func SaveConfigAtomic(cfg *Config) error {
-	configMu.Lock()
-	defer configMu.Unlock()
+	ConfigMu.Lock()
+	defer ConfigMu.Unlock()
 
-	if loadedPath == "" {
-		loadedPath = filepath.Join(getBinaryDir(), "config.json")
+	if LoadedPath == "" {
+		LoadedPath = filepath.Join(getBinaryDir(), "config.json")
 	}
 
-	dir := filepath.Dir(loadedPath)
+	dir := filepath.Dir(LoadedPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
@@ -148,14 +148,14 @@ func SaveConfigAtomic(cfg *Config) error {
 
 	// Atomic rename. On Windows, standard os.Rename can fail if dest is open.
 	if runtime.GOOS == "windows" {
-		_ = os.Remove(loadedPath) // Remove destination first to ensure overwrite compatibility
+		_ = os.Remove(LoadedPath) // Remove destination first to ensure overwrite compatibility
 	}
-	
-	if err := os.Rename(tmpName, loadedPath); err != nil {
+
+	if err := os.Rename(tmpName, LoadedPath); err != nil {
 		return fmt.Errorf("failed replacing config file: %w", err)
 	}
 
-	log.Printf("[Config] Atomic save completed to: %s", loadedPath)
+	log.Printf("[Config] Atomic save completed to: %s", LoadedPath)
 	return nil
 }
 
