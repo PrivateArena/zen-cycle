@@ -45,6 +45,7 @@ type UIState struct {
 	EditDenylistInput widget.Editor
 
 	// Buttons
+	HomeBtn        widget.Clickable
 	AddProjectBtn  widget.Clickable
 	RefreshBtn     widget.Clickable
 	EditBtn        widget.Clickable
@@ -211,6 +212,16 @@ func RunUI(window *app.Window, cfg *config.Config) error {
 }
 
 func handleInputs(gtx layout.Context, ui *UIState, cfg *config.Config, triggerScan chan int, eventChan chan BackgroundEvent, window *app.Window) {
+	// 0. Home Button — return to Add Project form
+	if ui.HomeBtn.Clicked(gtx) {
+		ui.ActiveProjectIndex.Store(-1)
+		ui.AvailableProfiles = nil
+		ui.DetectedActive = ""
+		ui.ActiveError = ""
+		ui.ActiveSuccess = ""
+		ui.EditingProject = false
+	}
+
 	// 1. Add Project Button Action
 	if ui.AddProjectBtn.Clicked(gtx) {
 		name := strings.TrimSpace(ui.NameInput.Text())
@@ -399,18 +410,19 @@ func drawSidebar(gtx layout.Context, th *material.Theme, ui *UIState, cfg *confi
 			activeIdx := int(ui.ActiveProjectIndex.Load())
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					lbl := material.H6(th, "ZEN-CYCLE")
+					lbl := material.Caption(th, "ZEN-CYCLE")
 					lbl.Color = colorAccent
 					lbl.Font.Weight = font.Bold
 					return lbl.Layout(gtx)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Caption(th, "ACCOUNT MANAGEMENT")
-					lbl.Color = colorSubtext
-					return lbl.Layout(gtx)
+					btn := material.Button(th, &ui.HomeBtn, "HOME")
+					btn.Background = color.NRGBA{R: 0x2a, G: 0x2a, B: 0x2a, A: 0xff}
+					btn.Color = colorAccent
+					return btn.Layout(gtx)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(16)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
 				
 				// Scrollable project list
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
@@ -428,18 +440,26 @@ func drawSidebar(gtx layout.Context, th *material.Theme, ui *UIState, cfg *confi
 
 						return layout.Inset{Bottom: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 							return material.Clickable(gtx, &ui.ProjectButtons[i], func(gtx layout.Context) layout.Dimensions {
-								return layout.Stack{}.Layout(gtx,
-									layout.Expanded(func(gtx layout.Context) layout.Dimensions {
-										paint.FillShape(gtx.Ops, btnColor, clip.Rect{Max: gtx.Constraints.Min}.Op())
-										return layout.Dimensions{Size: gtx.Constraints.Min}
-									}),
-									layout.Stacked(func(gtx layout.Context) layout.Dimensions {
-										return layout.Inset{Top: unit.Dp(10), Bottom: unit.Dp(10), Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-											lbl := material.Body2(th, proj.Name)
-											lbl.Color = txtColor
-											lbl.Font.Weight = font.Medium
-											return lbl.Layout(gtx)
-										})
+								return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+									layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+										return layout.Stack{}.Layout(gtx,
+											layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+												paint.FillShape(gtx.Ops, btnColor, clip.Rect{Max: gtx.Constraints.Min}.Op())
+												return layout.Dimensions{Size: gtx.Constraints.Min}
+											}),
+											layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+												return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+													layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+														return layout.Inset{Top: unit.Dp(10), Bottom: unit.Dp(10), Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+															lbl := material.Body2(th, proj.Name)
+															lbl.Color = txtColor
+															lbl.Font.Weight = font.Medium
+															return lbl.Layout(gtx)
+														})
+													}),
+												)
+											}),
+										)
 									}),
 								)
 							})
