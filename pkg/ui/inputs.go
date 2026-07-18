@@ -22,6 +22,7 @@ func handleInputs(gtx layout.Context, ui *UIState, cfg *config.Config, triggerSc
 		ui.ActiveError = ""
 		ui.ActiveSuccess = ""
 		ui.EditingProject = false
+		ui.Toasts.Clear()
 	}
 
 	// 1. Add Project Button Action
@@ -83,6 +84,7 @@ func handleInputs(gtx layout.Context, ui *UIState, cfg *config.Config, triggerSc
 			ui.ActiveSuccess = ""
 			ui.AvailableProfiles = nil
 			ui.DetectedActive = ""
+			ui.Toasts.Clear()
 			triggerScan <- i
 		}
 	}
@@ -106,6 +108,7 @@ func handleInputs(gtx layout.Context, ui *UIState, cfg *config.Config, triggerSc
 	// 4. Trigger Manual Refresh
 	if ui.RefreshBtn.Clicked(gtx) && activeIdx >= 0 {
 		ui.ActiveSuccess = ""
+		ui.Toasts.Clear()
 		triggerScan <- activeIdx
 	}
 

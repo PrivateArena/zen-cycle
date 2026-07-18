@@ -15,6 +15,7 @@ type UIState struct {
 	DetectedActive     string
 	ActiveError        string
 	ActiveSuccess      string
+	Toasts             ToastQueue
 
 	// Editors for Adding Projects
 	NameInput     widget.Editor

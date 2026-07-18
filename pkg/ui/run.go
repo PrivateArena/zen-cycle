@@ -117,22 +117,39 @@ func RunUI(window *app.Window, cfg *config.Config) error {
 						_ = config.SaveConfigAtomic(cfg)
 						uiState.ActiveSuccess = bEv.Message
 						uiState.ActiveError = ""
+						uiState.Toasts.Push(bEv.Message, ToastSuccess, ToastDefaultDuration)
 					case "ERROR":
 						uiState.ActiveError = bEv.Message
 						uiState.ActiveSuccess = ""
+						uiState.Toasts.Push(bEv.Message, ToastError, ToastDefaultDuration)
 					case "SUCCESS":
 						uiState.ActiveSuccess = bEv.Message
 						uiState.ActiveError = ""
+						uiState.Toasts.Push(bEv.Message, ToastSuccess, ToastDefaultDuration)
 					}
 				default:
 					break
 				}
-				if len(eventChan) == 0 {
-					break
+			if len(eventChan) == 0 {
+				break
+			}
+		}
+
+		// Drain expired toasts and clear corresponding persistent state
+		for _, expired := range uiState.Toasts.DrainExpired() {
+			switch expired.Type {
+			case ToastError:
+				if uiState.ActiveError == expired.Message {
+					uiState.ActiveError = ""
+				}
+			case ToastSuccess:
+				if uiState.ActiveSuccess == expired.Message {
+					uiState.ActiveSuccess = ""
 				}
 			}
+		}
 
-			gtx := app.NewContext(&ops, e)
+		gtx := app.NewContext(&ops, e)
 
 			// Process button clicks and user inputs
 			handleInputs(gtx, &uiState, cfg, triggerScanChan, eventChan, window)

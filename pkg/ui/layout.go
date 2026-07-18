@@ -124,6 +124,9 @@ func drawContent(gtx layout.Context, th *material.Theme, ui *UIState, cfg *confi
 			)
 		}),
 		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+			if ui.Toasts.Len() > 0 {
+				return DrawToastOverlay(gtx, th, &ui.Toasts)
+			}
 			if ui.ActiveError != "" || ui.ActiveSuccess != "" {
 				return layout.Inset{Top: unit.Dp(8), Left: unit.Dp(24), Right: unit.Dp(24)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 					return drawStatusBar(gtx, th, ui)
