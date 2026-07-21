@@ -3,6 +3,7 @@ package link
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -123,7 +124,21 @@ func SwitchActiveSource(p config.Project, newTarget string) error {
 	}
 
 	// 2. Perform link creation
-	return CreateLink(targetPath, linkPath)
+	if err := CreateLink(targetPath, linkPath); err != nil {
+		return err
+	}
+
+	// 3. Apply profile patcher (no-op when .cycle-patcher is absent).
+	//    Patcher failures are non-fatal: the main switch already succeeded.
+	report, perr := PatchProfile(p.Path, newTarget)
+	if perr != nil && !errors.Is(perr, ErrNoPatcher) {
+		log.Printf("[Patcher] fatal for profile %q: %v", newTarget, perr)
+	}
+	if len(report.Errors) > 0 {
+		log.Printf("[Patcher] profile=%q applied=%d skipped=%d errors=%d: %v",
+			newTarget, len(report.Applied), len(report.Skipped), len(report.Errors), report.Errors)
+	}
+	return nil
 }
 
 // createLink atomically points link -> target using a real symlink on every

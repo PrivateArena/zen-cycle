@@ -4,7 +4,7 @@
       "name": "ZCode",
       "path": "/media/jang/home/PortableApp/zcode/home",
       "symlink_name": ".zcode",
-      "current_active": ".zcode_giangtruongriverflowinyou",
+      "current_active": ".zcode_gundongdonggun",
       "process_denylist": [
         "zcode"
       ]
@@ -13,7 +13,7 @@
       "name": "AG",
       "path": "/media/jang/home/PortableApp/antigravity/data/user-data/User",
       "symlink_name": "globalStorage",
-      "current_active": "cycle_AI_globalStorage",
+      "current_active": "cycle_PA_globalStorage",
       "process_denylist": [
         "antigravity"
       ]
